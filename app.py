@@ -1,11 +1,13 @@
 from datetime import date
 import io
+import os
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from supabase import Client, create_client
 
 # Modules requis pour les exports Excel et PDF
 from reportlab.lib import colors
@@ -13,6 +15,106 @@ from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+
+# ===================================================================
+# ===================================================================
+# INITIALISATION ET FONCTIONS SUPABASE (LECTURE / ÉCRITURE SÉCURISÉES)
+# ===================================================================
+
+# Valeurs par défaut utilisées en dernier recours si rien n'est configuré
+DEFAULT_SUPABASE_URL = "https://coccgkawvtkqggxcydcp.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_secret_rIAaXQafdPG17RHpm3mbQQ_A4TamZfY"
+
+
+@st.cache_resource
+def init_supabase() -> Client | None:
+    """Initialise le client Supabase en cherchant dans st.secrets, os.environ puis en fallback."""
+    try:
+        # 1. Recherche dans st.secrets
+        url = st.secrets.get("SUPABASE_URL") if "SUPABASE_URL" in st.secrets else None
+        key = st.secrets.get("SUPABASE_KEY") if "SUPABASE_KEY" in st.secrets else None
+
+        # 2. Recherche dans os.environ
+        if not url:
+            url = os.environ.get("SUPABASE_URL")
+        if not key:
+            key = os.environ.get("SUPABASE_KEY")
+
+        # 3. Fallback direct avec les clés fournies
+        if not url:
+            url = DEFAULT_SUPABASE_URL
+        if not key:
+            key = DEFAULT_SUPABASE_KEY
+
+        if url and key:
+            return create_client(url, key)
+    except Exception as e:
+        st.warning(
+            f"Supabase non configuré via secrets ({e}). Mode fallback activé."
+        )
+
+    return None
+
+
+supabase_client = init_supabase()
+
+
+def fetch_sensor_data_from_supabase(
+    table_name: str = "arioca_measurements",
+) -> pd.DataFrame | None:
+    """Lit les données depuis Supabase de manière sécurisée."""
+    if supabase_client is None:
+        st.sidebar.error("Client Supabase non initialisé.")
+        return None
+
+    try:
+        response = (
+            supabase_client.table(table_name)
+            .select("*")
+            .order("timestamp", desc=True)
+            .limit(500)
+            .execute()
+        )
+        if response.data:
+            return pd.DataFrame(response.data)
+    except Exception as e:
+        st.sidebar.error(f"Erreur Supabase (Lecture) : {e}")
+
+    return None
+
+
+def insert_sensor_data_to_supabase(
+    df: pd.DataFrame, table_name: str = "arioca_measurements"
+) -> bool:
+    """Écrit / Insère de nouveaux enregistrements dans Supabase."""
+    if supabase_client is None:
+        st.warning(
+            "Supabase n'est pas configuré. Impossible d'enregistrer en BDD."
+        )
+        return False
+
+    if df.empty:
+        st.warning("Le DataFrame fourni est vide.")
+        return False
+
+    try:
+        # Conversion du dataframe en dictionnaire JSON-compatible
+        records = df.to_dict(orient="records")
+
+        # Conversion explicite des objets dates/timestamps en chaînes ISO
+        for r in records:
+            for k, v in r.items():
+                if isinstance(v, (pd.Timestamp, datetime, date)):
+                    r[k] = v.isoformat()
+                elif pd.isna(v):
+                    r[k] = None  # Gère proprement les valeurs NaN de pandas
+
+        supabase_client.table(table_name).insert(records).execute()
+        st.success("Données sauvegardées dans Supabase avec succès !")
+        return True
+    except Exception as e:
+        st.error(f"Erreur d'écriture Supabase : {e}")
+        return False
 
 # ===================================================================
 # FONCTIONS D'EXPORTATION (EXCEL & PDF)
@@ -126,6 +228,13 @@ st.markdown(
 
 # 4. Barre latérale de contrôle
 st.sidebar.markdown("### ⚙️ Panneau de Contrôle")
+
+# Indication statut Supabase
+if supabase_client:
+    st.sidebar.success("⚡ Supabase : Connecté")
+else:
+    st.sidebar.info("ℹ️ Supabase : Non connecté (Mode Démo)")
+
 st.sidebar.markdown("---")
 
 source_donnees = st.sidebar.radio(
@@ -181,23 +290,34 @@ if source_donnees == "Réseau Capteurs ARIOCA":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    df_demo = pd.DataFrame({
-        "Heure": pd.date_range("2026-08-15 00:00", periods=24, freq="h"),
-        "Bonanjo": np.random.uniform(0, 15, 24),
-        "Deido": np.random.uniform(0, 20, 24),
-        "Bassa": np.random.uniform(0, 35, 24),
-        "Nyalla": np.random.uniform(0, 30, 24),
-    }).melt("Heure", var_name="Station", value_name="Précipitation (mm)")
+    # --- LECTURE DEPUIS SUPABASE (avec Fallback Simulation) ---
+    df_supabase = fetch_sensor_data_from_supabase()
 
-    df_demo = df_demo[df_demo["Station"].isin(stations_selectionnees)]
+    if df_supabase is not None and not df_supabase.empty:
+        df_demo = df_supabase
+        st.toast("Données synchronisées en temps réel depuis Supabase.")
+    else:
+        df_demo = pd.DataFrame({
+            "Heure": pd.date_range("2026-08-15 00:00", periods=24, freq="h"),
+            "Bonanjo": np.random.uniform(0, 15, 24),
+            "Deido": np.random.uniform(0, 20, 24),
+            "Bassa": np.random.uniform(0, 35, 24),
+            "Nyalla": np.random.uniform(0, 30, 24),
+        }).melt("Heure", var_name="Station", value_name="Précipitation (mm)")
 
-    tab_graphes, tab_table, tab_carte = st.tabs(
-        ["📊 Graphiques d'Analyse", "📋 Table des Relevés", "🗺️ Cartographie"]
-    )
+    if "Station" in df_demo.columns:
+        df_demo = df_demo[df_demo["Station"].isin(stations_selectionnees)]
+
+    tab_graphes, tab_table, tab_carte, tab_supabase = st.tabs([
+        "📊 Graphiques d'Analyse",
+        "📋 Table des Relevés",
+        "🗺️ Cartographie",
+        "⚡ Enregistrement Supabase",
+    ])
 
     with tab_graphes:
         st.subheader("Analyse Temporelle des Précipitations")
-        if not df_demo.empty:
+        if not df_demo.empty and "Heure" in df_demo.columns:
             fig = px.line(
                 df_demo,
                 x="Heure",
@@ -295,8 +415,22 @@ if source_donnees == "Réseau Capteurs ARIOCA":
                     "Station Externe": "#0F172A",
                 },
             )
-            fig_map.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=500)
+            fig_map.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0), height=500
+            )
             st.plotly_chart(fig_map, use_container_width=True)
+
+    with tab_supabase:
+        st.subheader("📤 Synchronisation & Écriture vers Supabase")
+        st.write(
+            "Enregistrer les relevés affichés ci-dessus directement dans la base de données PostgreSQL de Supabase."
+        )
+
+        if st.button("💾 Push / Sauvegarder les relevés dans Supabase"):
+            if not df_demo.empty:
+                insert_sensor_data_to_supabase(df_demo)
+            else:
+                st.warning("Le tableau de données est vide.")
 
 # ===================================================================
 # BRANCHE 2 : PRÉDICTIONS IA & ALERTE PRÉCOCE
@@ -321,7 +455,6 @@ elif source_donnees == "🤖 Prédictions IA (Risque Inondation & Pluie)":
         debit_wouri = st.slider("Débit Wouri estimé (m³/s)", 500, 3500, 2100)
 
     # Calcul d'un indice de risque IA fondé sur la pondération
-    # Pluie (40%), Marée (30%), Saturation sol (20%), Débit Wouri (10%)
     score_inondation = min(
         100.0,
         (pluie_sim / 120.0 * 40)
@@ -372,16 +505,19 @@ elif source_donnees == "🤖 Prédictions IA (Risque Inondation & Pluie)":
                 },
             )
         )
-        fig_gauge.update_layout(height=280, margin=dict(l=10, r=10, t=30, b=10))
+        fig_gauge.update_layout(
+            height=280, margin=dict(l=10, r=10, t=30, b=10)
+        )
         st.plotly_chart(fig_gauge, use_container_width=True)
 
     with p3:
-        st.info(f"**Recommandation des Services d'Urgence :**\n\n{recommandation}")
+        st.info(
+            f"**Recommandation des Services d'Urgence :**\n\n{recommandation}"
+        )
 
     st.markdown("---")
     st.subheader("📈 Prédiction IA des Précipitations (H+1 à H+24)")
 
-    # Génération d'une courbe de prédiction simulée par le modèle d'IA
     heures_futures = pd.date_range(pd.Timestamp.now(), periods=24, freq="h")
     base_pred = (
         np.sin(np.linspace(0, 2 * np.pi, 24)) * (pluie_sim / 4) + (pluie_sim / 6)
@@ -427,14 +563,15 @@ elif source_donnees == "🤖 Prédictions IA (Risque Inondation & Pluie)":
 # BRANCHE 3 : CARTE D'INONDATION & SECTEURS À RISQUE
 # ===================================================================
 elif source_donnees == "🌊 Carte d'Inondation & Secteurs à Risque":
-    st.subheader("🌊 Cartographie du Risque d'Inondation & Vulnérabilité de Douala")
+    st.subheader(
+        "🌊 Cartographie du Risque d'Inondation & Vulnérabilité de Douala"
+    )
     st.markdown(
         "Ce module modélise les zones vulnérables aux inondations à Douala en fonction de la topographie, de l'élévation par rapport au niveau de la mer et de la proximité des réseaux de drainage/fleuve."
     )
 
     st.markdown("---")
 
-    # Modélisation des quartiers à risque à Douala
     quartiers_douala = pd.DataFrame({
         "Quartier": [
             "Makepe Misoke",
@@ -497,7 +634,6 @@ elif source_donnees == "🌊 Carte d'Inondation & Secteurs à Risque":
             step=0.5,
         )
 
-    # Logique de calcul du statut de chaque quartier
     quartiers_douala["Statut_Inondation"] = quartiers_douala[
         "Altitude_m"
     ].apply(
@@ -518,12 +654,14 @@ elif source_donnees == "🌊 Carte d'Inondation & Secteurs à Risque":
     pop_totale_impactee = impactes["Population_Exposee"].sum()
 
     with col_sim2:
-        st.metric("Quartiers Submergés", f"{len(impactes)} / {len(quartiers_douala)}")
         st.metric(
-            "Population Directement Exposée", f"{pop_totale_impactee:,} habitants"
+            "Quartiers Submergés", f"{len(impactes)} / {len(quartiers_douala)}"
+        )
+        st.metric(
+            "Population Directement Exposée",
+            f"{pop_totale_impactee:,} habitants",
         )
 
-    # Carte interactive Plotly Mapbox
     fig_inondation = px.scatter_mapbox(
         quartiers_douala,
         lat="lat",
@@ -545,7 +683,6 @@ elif source_donnees == "🌊 Carte d'Inondation & Secteurs à Risque":
         color_discrete_map={
             "🔴 Zone Inondée": "#DC2626",
             "🟡 Risque d'Infiltration": "#D97706",
-            "🟢 Zone Sèche / Hors D me": "#16A34A",
             "🟢 Zone Sèche / Hors D'atteinte": "#16A34A",
         },
         title=f"Carte de Vulnerabilité pour une Crue Simulée de {niveau_crue}m",
@@ -559,7 +696,6 @@ elif source_donnees == "🌊 Carte d'Inondation & Secteurs à Risque":
         quartiers_douala.sort_values(by="Altitude_m"), use_container_width=True
     )
 
-    # Export des données d'inondation
     st.download_button(
         label="📄 Télécharger l'Analyse de Vulnérabilité (CSV)",
         data=quartiers_douala.to_csv(index=False).encode("utf-8"),
@@ -716,7 +852,8 @@ elif source_donnees == "APIs Extérieures (METAR / Marine / OMM)":
                     )
                 with c3:
                     st.metric(
-                        "Précipitations", f"{current.get('precipitation', 0)} mm"
+                        "Précipitations",
+                        f"{current.get('precipitation', 0)} mm",
                     )
                 with c4:
                     st.metric(
@@ -726,7 +863,7 @@ elif source_donnees == "APIs Extérieures (METAR / Marine / OMM)":
             st.error(f"Erreur API : {e}")
 
 # ===================================================================
-# BRANCHE 5 : FICHIER EXTERNE (AVEC EXPORT CSV / EXCEL / PDF)
+# BRANCHE 5 : FICHIER EXTERNE (AVEC EXPORT ET ENREGISTREMENT SUPABASE)
 # ===================================================================
 else:
     st.subheader("📤 Importation, Analyse & Exportation de Fichier Externe")
@@ -766,7 +903,9 @@ else:
 
             # --- FILTRAGE DYNAMIQUE PAR STATION ---
             if col_station != "Aucune":
-                liste_stations = df_externe[col_station].dropna().unique().tolist()
+                liste_stations = (
+                    df_externe[col_station].dropna().unique().tolist()
+                )
                 st.markdown("---")
                 col_filter1, col_filter2 = st.columns([2, 2])
                 with col_filter1:
@@ -778,7 +917,9 @@ else:
 
                 if stations_selectionnees_ext:
                     df_externe = df_externe[
-                        df_externe[col_station].isin(stations_selectionnees_ext)
+                        df_externe[col_station].isin(
+                            stations_selectionnees_ext
+                        )
                     ]
                 else:
                     st.warning("Aucune station sélectionnée. Affichage vide.")
@@ -816,6 +957,12 @@ else:
                 template="plotly_white",
             )
             st.plotly_chart(fig_ext, use_container_width=True)
+
+            # --- OPTION D'ENREGISTREMENT SUPABASE ---
+            st.markdown("---")
+            st.markdown("### ⚡ Sauvegarde des données importées")
+            if st.button("💾 Envoyer ce fichier importé vers Supabase"):
+                insert_sensor_data_to_supabase(df_externe)
 
             # --- BOUTONS DE TÉLÉCHARGEMENT (CSV / EXCEL / PDF) ---
             st.markdown("---")
