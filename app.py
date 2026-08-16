@@ -23,7 +23,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 # Valeurs par défaut utilisées en dernier recours si rien n'est configuré
 DEFAULT_SUPABASE_URL = "https://coccgkawvtkqggxcydcp.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_secret_rIAaXQafdPG17RHpm3mbQQ_A4TamZfY"
+DEFAULT_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvY2Nna2F3dnRrcWdneGN5ZGNwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4ODQ4OTQsImV4cCI6MjEwMjQ2MDg5NH0.ptwDoSJUQQyHPo_e4O3QtzS0qvGBLelq6x7tg2T7Lu8"
 
 
 @st.cache_resource
