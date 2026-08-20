@@ -16,6 +16,27 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
+# ==============================================================================
+# 1. CONFIGURATION DE LA PAGE (Doit être la TOUTE PREMIÈRE commande Streamlit)
+# ==============================================================================
+st.set_page_config(
+    page_title="Plateforme d'Analyse", 
+    page_icon="🚀", 
+    layout="wide"
+)
+
+# ==============================================================================
+# 2. CONTENU DE LA PAGE D'ACCUEIL
+# ==============================================================================
+st.title("🚀 Bienvenue sur la Plateforme d'Analyse de Données")
+st.markdown("""
+Sélectionne une option dans le menu de gauche :
+* **📡 Données Sondes** : Pour les fichiers d'enregistreurs automatiques (MiniSonde, météo, etc.).
+* **📊 Import Universel** : Pour analyser n'importe quel fichier Excel ou CSV standard.
+""")
+
+# ... Le reste de ton code Supabase / logique existante vient ici ...
+
 # ===================================================================
 # ===================================================================
 # INITIALISATION ET FONCTIONS SUPABASE (LECTURE / ÉCRITURE SÉCURISÉES)
